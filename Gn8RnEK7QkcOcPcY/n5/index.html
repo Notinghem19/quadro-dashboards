@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>QuadroBuilder — რეპორტი</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-0: #f3f2ee;
+    --surface-1: #fcfcfb;
+    --border: #e6e5e0;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #8a8880;
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --muted-mark: #c8d4e4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-0: #121211;
+      --surface-1: #1a1a19;
+      --border: #32322f;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #8f8e85;
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --series-3: #199e70;
+      --muted-mark: #3b4453;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px 56px;
+    background: var(--surface-0); color: var(--text-primary);
+    font-family: "Sylfaen", "Noto Sans Georgian", "Segoe UI", system-ui, sans-serif;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; }
+  header { margin-bottom: 20px; }
+  h1 { font-size: 1.45rem; margin: 0 0 4px; }
+  .period { color: var(--text-secondary); font-size: .95rem; }
+  .kpis { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin: 20px 0 8px; }
+  .kpi { background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px; }
+  .kpi .label { font-size: .8rem; color: var(--text-secondary); }
+  .kpi .value { font-size: 1.35rem; font-weight: 700; margin-top: 4px; }
+  .kpi .note { font-size: .78rem; color: var(--text-muted); margin-top: 4px; }
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; padding: 16px; margin-top: 16px; }
+  .card h2 { font-size: 1rem; margin: 0 0 12px; }
+  ul.points { margin: 0; padding-left: 18px; color: var(--text-secondary); }
+  ul.points li { margin-bottom: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--text-secondary); font-weight: 600; font-size: .82rem; }
+  td:not(:first-child), th:not(:first-child) { text-align: right; }
+  td:first-child { white-space: normal; min-width: 180px; }
+  .scroll { overflow-x: auto; }
+  footer { color: var(--text-muted); font-size: .8rem; margin-top: 24px; text-align: center; }
+  .msg { background: var(--surface-1); border: 1px solid var(--border); border-radius: 14px; padding: 24px; text-align: center; color: var(--text-secondary); }
+  canvas { max-height: 340px; }
+</style>
+</head>
+<body>
+<div class="wrap" id="root">
+  <div class="msg" id="status">იტვირთება…</div>
+</div>
+<script>
+const PALETTE = ["--series-1", "--series-2", "--series-3"];
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+async function decrypt(payload, rawKey) {
+  const key = await crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, ["decrypt"]);
+  const bytes = new Uint8Array(await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: b64(payload.iv) }, key, b64(payload.data)));
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+function b64(value) {
+  const normal = value.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(normal);
+  return Uint8Array.from(binary, c => c.charCodeAt(0));
+}
+
+function drawChart(chart, host) {
+  const canvas = el("canvas");
+  host.appendChild(canvas);
+  const grid = css("--border"), tick = css("--text-secondary");
+  const common = {
+    responsive: true,
+    plugins: { legend: { display: !!chart.series, labels: { color: tick, boxWidth: 12 } } },
+    scales: {
+      x: { grid: { color: grid, drawBorder: false }, ticks: { color: tick } },
+      y: { grid: { color: grid, drawBorder: false }, ticks: { color: tick } }
+    }
+  };
+  if (chart.kind === "grouped_bars") {
+    new Chart(canvas, {
+      type: "bar",
+      data: {
+        labels: chart.labels,
+        datasets: chart.series.map((s, i) => ({
+          label: s.name, data: s.values,
+          backgroundColor: css(PALETTE[i % PALETTE.length]), borderRadius: 4
+        }))
+      },
+      options: common
+    });
+  } else if (chart.kind === "hbars") {
+    new Chart(canvas, {
+      type: "bar",
+      data: { labels: chart.labels, datasets: [{ data: chart.values,
+        backgroundColor: css("--series-1"), borderRadius: 4 }] },
+      options: { ...common, indexAxis: "y", plugins: { legend: { display: false } } }
+    });
+  } else {
+    const colors = chart.values.map((_, i) =>
+      (chart.highlight_last && i === chart.values.length - 1) ? css("--series-1") : css("--muted-mark"));
+    new Chart(canvas, {
+      type: "bar",
+      data: { labels: chart.labels, datasets: [{ data: chart.values, backgroundColor: colors, borderRadius: 4 }] },
+      options: { ...common, plugins: { legend: { display: false } } }
+    });
+  }
+}
+
+function render(report) {
+  const root = document.getElementById("root");
+  root.innerHTML = "";
+
+  const head = el("header");
+  head.appendChild(el("h1", null, report.title));
+  head.appendChild(el("div", "period", report.period));
+  root.appendChild(head);
+
+  const kpis = el("div", "kpis");
+  (report.kpis || []).forEach(k => {
+    const card = el("div", "kpi");
+    card.appendChild(el("div", "label", k.label));
+    card.appendChild(el("div", "value", k.value));
+    const note = [k.delta, k.note].filter(Boolean).join(" · ");
+    if (note) card.appendChild(el("div", "note", note));
+    kpis.appendChild(card);
+  });
+  root.appendChild(kpis);
+
+  if ((report.highlights || []).length) {
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, "მთავარი"));
+    const list = el("ul", "points");
+    report.highlights.forEach(h => list.appendChild(el("li", null, h)));
+    card.appendChild(list);
+    root.appendChild(card);
+  }
+
+  if (report.chart && (report.chart.values || report.chart.series)) {
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, report.chart.title || ""));
+    drawChart(report.chart, card);
+    root.appendChild(card);
+  }
+
+  (report.tables || []).forEach(t => {
+    if (!t.rows || !t.rows.length) return;
+    const card = el("div", "card");
+    card.appendChild(el("h2", null, t.title));
+    const scroll = el("div", "scroll");
+    const table = el("table");
+    const thead = el("thead"), tr = el("tr");
+    t.columns.forEach(c => tr.appendChild(el("th", null, c)));
+    thead.appendChild(tr); table.appendChild(thead);
+    const tbody = el("tbody");
+    t.rows.forEach(row => {
+      const line = el("tr");
+      row.forEach(cell => line.appendChild(el("td", null, cell)));
+      tbody.appendChild(line);
+    });
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    card.appendChild(scroll);
+    root.appendChild(card);
+  });
+
+  const foot = el("footer", null, "განახლდა " + report.generated + " · QuadroBuilder");
+  root.appendChild(foot);
+}
+
+(async () => {
+  const status = document.getElementById("status");
+  try {
+    const keyPart = new URLSearchParams(location.hash.slice(1)).get("k");
+    if (!keyPart) { status.textContent = "ბმული არასრულია — გახსენით WhatsApp-ში გამოგზავნილი სრული ბმული."; return; }
+    const payload = await (await fetch("data.json?t=" + Date.now())).json();
+    render(await decrypt(payload, b64(keyPart)));
+  } catch (err) {
+    status.textContent = "მონაცემების გახსნა ვერ მოხერხდა — შეამოწმეთ ბმული.";
+    console.error(err);
+  }
+})();
+</script>
+</body>
+</html>
