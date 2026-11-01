@@ -44,6 +44,14 @@
   }
   .wrap { max-width: 1000px; margin: 0 auto; }
   header { margin-bottom: 20px; }
+  .picker { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  .picker input, .picker button, .picker select {
+    font: inherit; color: var(--text-primary); background: var(--surface-1);
+    border: 1px solid var(--border); border-radius: 10px; padding: 7px 12px;
+  }
+  .picker button { cursor: pointer; min-width: 40px; }
+  .picker button:disabled { opacity: .4; cursor: default; }
+  .picker .hint { color: var(--text-muted); font-size: .82rem; }
   h1 { font-size: 1.45rem; margin: 0 0 4px; }
   .period { color: var(--text-secondary); font-size: .95rem; }
   .kpis { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin: 20px 0 8px; }
@@ -136,13 +144,59 @@ function drawChart(chart, host) {
   }
 }
 
-function render(report) {
+function buildPicker(onPick) {
+  // Only shown once the list of published dates has loaded.
+  const box = el("div", "picker");
+  const back = el("button", null, "‹");
+  const input = document.createElement("input");
+  input.type = "date";
+  const forward = el("button", null, "›");
+  const hint = el("span", "hint", "");
+  box.append(back, input, forward, hint);
+
+  const state = { dates: [], at: -1 };
+
+  const show = (index, silent) => {
+    if (index < 0 || index >= state.dates.length) return;
+    state.at = index;
+    input.value = state.dates[index];
+    back.disabled = index === 0;
+    forward.disabled = index === state.dates.length - 1;
+    hint.textContent = `${index + 1} / ${state.dates.length}`;
+    if (!silent) onPick(state.dates[index]);
+  };
+
+  back.onclick = () => show(state.at - 1);
+  forward.onclick = () => show(state.at + 1);
+  input.onchange = () => {
+    const wanted = input.value;
+    let index = state.dates.indexOf(wanted);
+    if (index < 0) {
+      // Nearest published date at or before the one picked.
+      const earlier = state.dates.filter(d => d <= wanted);
+      index = earlier.length ? state.dates.indexOf(earlier[earlier.length - 1]) : 0;
+    }
+    show(index);
+  };
+
+  box.setDates = (dates, current, silent) => {
+    state.dates = dates;
+    input.min = dates[0];
+    input.max = dates[dates.length - 1];
+    const index = dates.indexOf(current);
+    show(index >= 0 ? index : dates.length - 1, silent);
+  };
+  return box;
+}
+
+function render(report, picker) {
   const root = document.getElementById("root");
   root.innerHTML = "";
 
   const head = el("header");
   head.appendChild(el("h1", null, report.title));
   head.appendChild(el("div", "period", report.period));
+  if (picker) head.appendChild(picker);
   root.appendChild(head);
 
   const kpis = el("div", "kpis");
@@ -199,11 +253,54 @@ function render(report) {
 
 (async () => {
   const status = document.getElementById("status");
+  const params = new URLSearchParams(location.hash.slice(1));
+  const keyPart = params.get("k");
+  if (!keyPart) {
+    status.textContent = "ბმული არასრულია — გახსენით WhatsApp-ში გამოგზავნილი სრული ბმული.";
+    return;
+  }
+  const rawKey = b64(keyPart);
+
+  const load = async file => {
+    const response = await fetch(file + "?t=" + Date.now());
+    if (!response.ok) throw new Error(file + " " + response.status);
+    return decrypt(await response.json(), rawKey);
+  };
+
+  let picker = null;
+  const open = async date => {
+    try {
+      const report = await load(date ? `${date}.json` : "data.json");
+      render(report, picker);
+      // Keep the chosen date in the link so it can be shared or reloaded.
+      params.set("d", date || "");
+      if (!date) params.delete("d");
+      history.replaceState(null, "", "#" + params.toString());
+    } catch (err) {
+      status.textContent = "ამ თარიღის მონაცემები არ მოიძებნა.";
+      console.error(err);
+    }
+  };
+
   try {
-    const keyPart = new URLSearchParams(location.hash.slice(1)).get("k");
-    if (!keyPart) { status.textContent = "ბმული არასრულია — გახსენით WhatsApp-ში გამოგზავნილი სრული ბმული."; return; }
-    const payload = await (await fetch("data.json?t=" + Date.now())).json();
-    render(await decrypt(payload, b64(keyPart)));
+    const wanted = params.get("d");
+    const report = await load(wanted ? `${wanted}.json` : "data.json");
+
+    // The date list is optional: an older publish may not have one yet.
+    let dates = [];
+    try {
+      dates = (await (await fetch("index.json?t=" + Date.now())).json()).dates || [];
+    } catch (err) {
+      console.warn("no date index yet", err);
+    }
+    if (dates.length > 1) {
+      picker = buildPicker(open);
+      render(report, picker);
+      // silent: the report for this date is already on screen.
+      picker.setDates(dates, wanted || dates[dates.length - 1], true);
+    } else {
+      render(report, null);
+    }
   } catch (err) {
     status.textContent = "მონაცემების გახსნა ვერ მოხერხდა — შეამოწმეთ ბმული.";
     console.error(err);
